@@ -1,4 +1,3 @@
-
 import argparse
 import json
 import subprocess
@@ -53,10 +52,12 @@ def _run_git(repository, command):
         capture_output=True,
         text=True
     )
+
     if result.returncode != 0:
         raise RuntimeError(
             result.stderr.strip() or result.stdout.strip()
         )
+
     return result.stdout.strip()
 
 
@@ -147,10 +148,14 @@ def fix_repository(
 
         fixed = original.replace(old_line, new_line, 1)
 
+        normalized_patch_file = Path(
+            patch_info["file"]
+        ).as_posix()
+
         matching_tests = [
             test for test in analysis["ranked_tests"]
-            if test["test_file"].replace("\\", "/")
-            == patch_info["file"].replace("\\", "/")
+            if Path(test["test_file"]).as_posix()
+            == normalized_patch_file
         ]
 
         if not matching_tests:
@@ -162,7 +167,7 @@ def fix_repository(
             continue
 
         test_name = matching_tests[0]["test_name"]
-        test_file = patch_info["file"].replace("\\", "/")
+        test_file = normalized_patch_file
         command = f"python -m pytest {test_file}::{test_name}"
 
         result = FixVerifier().verify(
@@ -186,7 +191,7 @@ def fix_repository(
 
         if is_verified:
             verified_changes.append({
-                "file": str(relative_path),
+                "file": relative_path.as_posix(),
                 "original": original,
                 "fixed": fixed,
                 "passes": result.get("passes", 0),
@@ -235,21 +240,38 @@ def fix_repository(
 
             for item in verified_changes:
                 target = (repository / item["file"]).resolve()
+
+                if repository not in target.parents:
+                    raise RuntimeError(
+                        "Unsafe file path detected before applying fix."
+                    )
+
                 target.write_text(
                     item["fixed"],
                     encoding="utf-8"
                 )
 
-            _run_git(repository, ["add"] + [
-                item["file"] for item in verified_changes
-            ])
+            _run_git(
+                repository,
+                ["add"] + [
+                    item["file"] for item in verified_changes
+                ]
+            )
 
             staged = _run_git(
                 repository,
                 ["diff", "--cached", "--name-only"]
             ).splitlines()
 
-            expected = sorted(changed_files)
+            expected = sorted(
+                Path(item["file"]).as_posix()
+                for item in verified_changes
+            )
+
+            staged = [
+                Path(item).as_posix() for item in staged
+            ]
+
             if sorted(staged) != expected:
                 raise RuntimeError(
                     "Staged files do not match the verified fixes. "
